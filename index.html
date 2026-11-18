@@ -102,6 +102,7 @@ th{color:var(--muted);font-weight:700}
 .ok-t{color:var(--ok);font-weight:700} .bad-t{color:var(--bad);font-weight:700}
 .stats{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-weight:700}
 .hidden{display:none}
+.basebox{border:2px solid var(--teal);border-radius:16px;padding:16px;margin:16px 0 8px}
 .consent{margin-top:20px;border:1.5px solid var(--line);border-radius:14px;padding:14px;font-size:13px;line-height:1.45;background:var(--bg)}
 .consent strong{display:block;font-size:14px;margin-bottom:6px}
 .consent p{margin:0 0 8px}
@@ -1010,6 +1011,52 @@ function thanksView(){
 }
 
 /* ---------- Vista de control para Formación (#verificar) ---------- */
+let dbPromise=null;
+function getDb(){ if(!dbPromise) dbPromise=(async()=>{ try{ return (window.claude&&typeof window.claude.use==="function") ? await window.claude.use("db") : null; }catch(e){ return null; } })(); return dbPromise; }
+function codeKey(code){ return String(code).toUpperCase().replace(/[^0-9A-Z]/g,""); }
+function toRecord(x){
+  const r=x.r, pct=Math.round(r.score/TOTAL*100);
+  return { codigo:String(x.code).toUpperCase().replace(/\s/g,""), nombre:x.name||"", cedula:r.ced, cliente:r.client, sede:r.sede,
+    correctas:r.score, totalRetos:TOTAL, porcentaje:pct, estado:r.score>=NEED?"Aprobado":"No aprobado", intento:r.attempt,
+    fecha:r.date.toISOString().slice(0,10), hora:r.hora, compromiso:COMMITS[r.commit]||"",
+    autorizacionDatos:x.consent||"", guardadoEl:new Date().toISOString() };
+}
+let baseUnsub=null, baseRows=[];
+async function loadBase(){
+  const box=document.getElementById("base"); if(!box) return;
+  const db=await getDb();
+  if(!db){ box.innerHTML=`<p class="small">Tu base de registros solo está disponible cuando abres esta vista con tu cuenta de Claude. Puedes seguir validando y copiando a Excel.</p>`; return; }
+  const timer=setTimeout(()=>{ if(!baseRows.length && document.getElementById("base")) box.innerHTML=`<p class="small">La base aún no tiene registros. Valida mensajes abajo y toca “Guardar los registros válidos en mi base”.</p>`; },10000);
+  if(baseUnsub) baseUnsub();
+  baseUnsub=db.collection("registros").onSnapshot(snap=>{
+    clearTimeout(timer);
+    baseRows=snap.docs.map(d=>d.data()).sort((a,b)=>(b.fecha+b.hora).localeCompare(a.fecha+a.hora));
+    renderBase();
+  },()=>{ clearTimeout(timer); box.innerHTML=`<p class="err">No se pudo leer tu base de registros.</p>`; });
+}
+function renderBase(){
+  const box=document.getElementById("base"); if(!box) return;
+  const ced={}; baseRows.forEach(r=>{ const p=ced[r.cedula]; if(!p||r.intento>p.intento) ced[r.cedula]=r; });
+  const uniq=Object.values(ced), apr=uniq.filter(r=>r.estado==="Aprobado").length;
+  box.innerHTML=`<h3 style="margin-top:0">Mi base de registros</h3>
+    <div class="stats"><span>${baseRows.length} registros guardados</span><span>${uniq.length} conductores</span><span>${apr} aprobados</span></div>
+    ${baseRows.length?`<div class="tablewrap"><table><thead><tr><th>Nombre</th><th>Cédula</th><th>Cliente</th><th>Sede</th><th>%</th><th>Estado</th><th>Intento</th><th>Fecha</th><th>Código</th></tr></thead><tbody>${baseRows.map(r=>`<tr><td>${esc(r.nombre)}</td><td>${esc(r.cedula)}</td><td>${esc(r.cliente)}</td><td>${esc(r.sede)}</td><td>${r.porcentaje}%</td><td class="${r.estado==="Aprobado"?"ok-t":"bad-t"}">${r.estado}</td><td>${r.intento}</td><td>${esc(r.fecha)} ${esc(r.hora)}</td><td>${esc(r.codigo)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="row2" style="margin-top:4px"><button class="btn" id="dlJson">Descargar JSON</button><button class="btn ghost" id="cpBase">Copiar para Excel</button></div>
+    <p class="small" id="baseMsg"></p>`:`<p class="small">Aún no hay registros guardados. Valida mensajes abajo y toca “Guardar los registros válidos en mi base”.</p>`}`;
+  const dj=document.getElementById("dlJson"); if(dj) dj.onclick=async()=>{
+    const json=JSON.stringify({actividad:"Reinducción Gente & Cultura",exportadoEl:new Date().toISOString(),total:baseRows.length,registros:baseRows},null,2);
+    const name=`registros-reinduccion-${new Date().toISOString().slice(0,10)}.json`;
+    const dl=await getDownloads(); let done=false;
+    if(dl){ try{ await dl.save({filename:name,data:new Blob([json],{type:"application/json"})}); done=true; }catch(e){ if(e&&e.code==="declined") return; } }
+    if(!done){ try{ await navigator.clipboard.writeText(json); document.getElementById("baseMsg").textContent="No se pudo descargar; copié el JSON al portapapeles."; }catch(e){ document.getElementById("baseMsg").textContent="No se pudo descargar el JSON."; } }
+  };
+  const cb=document.getElementById("cpBase"); if(cb) cb.onclick=async()=>{
+    const head=["Nombre","Cédula","Cliente","Sede","Correctas","Porcentaje","Estado","Intento","Fecha","Hora","Compromiso","Autorización datos","Código"];
+    const t=[head.join("\t")].concat(baseRows.map(r=>[r.nombre,r.cedula,r.cliente,r.sede,r.correctas,r.porcentaje,r.estado,r.intento,r.fecha,r.hora,r.compromiso,r.autorizacionDatos,r.codigo].join("\t"))).join("\n");
+    try{ await navigator.clipboard.writeText(t); cb.textContent="Copiado: pégalo en Excel"; }catch(e){ cb.textContent="No se pudo copiar"; }
+  };
+}
+
 function verifier(){
   document.getElementById("road").classList.add("hidden");
   document.getElementById("wrap").classList.add("wide");
@@ -1017,25 +1064,28 @@ function verifier(){
     <p style="margin:0 0 10px"><button class="linkbtn" id="toGame" style="padding:0">← Volver al juego</button></p>
     <h1>Control · Reinducción Gente &amp; Cultura</h1>
     <p class="lead">Pega aquí los mensajes de WhatsApp que enviaron los conductores, o las filas del Excel que descargas de Forms (con las columnas de cédula y código). La tabla valida cada código contra la cédula y te dice si el registro es auténtico.</p>
+    <div id="base" class="basebox"><p class="small">Cargando tu base de registros…</p></div>
+    <h3>Agregar registros</h3>
     <label for="paste">Mensajes</label>
     <textarea id="paste" placeholder="Reinducción Gente &amp; Cultura&#10;Nombre: …&#10;Cédula: …&#10;Código: A86-XXXXXX-XXXXXX-XXXXXX"></textarea>
     <button class="btn" id="run">Validar registros</button>
     <div id="out"></div>
   </section>`;
-  document.getElementById("toGame").onclick=()=>{ history.replaceState(null,"",location.pathname+location.search); route(); };
+  document.getElementById("toGame").onclick=()=>{ if(baseUnsub){baseUnsub();baseUnsub=null;} history.replaceState(null,"",location.pathname+location.search); route(); };
+  loadBase();
   document.getElementById("run").onclick=()=>{
     const raw=document.getElementById("paste").value;
     const CODE=/\b([AN]\d{1,3}-?[0-9A-Z]{6}-?[0-9A-Z]{6}-?[0-9A-Z]{6})\b/i;
     const rows=[], seen=new Set();
-    const add=(name,cedMsg,code,commitMsg)=>{
+    const add=(name,cedMsg,code,commitMsg,consent)=>{
       const key=code.toUpperCase().replace(/[^0-9A-Z]/g,""); if(seen.has(key)) return; seen.add(key);
-      const r=readCode(code,cedMsg); rows.push({name,ced:r?r.ced:cedMsg,code,r,commitTxt:r&&r.valid?COMMITS[r.commit]:commitMsg});
+      const r=readCode(code,cedMsg); rows.push({name,ced:r?r.ced:cedMsg,code,r,consent:consent||"",commitTxt:r&&r.valid?COMMITS[r.commit]:commitMsg});
     };
     if(/Reinducci[oó]n (?:Soy Vig[ií]a|Gente (?:&|y) Cultura)/i.test(raw)){
       for(const b of raw.split(/Reinducci[oó]n (?:Soy Vig[ií]a|Gente (?:&|y) Cultura)/i).map(x=>x.trim()).filter(Boolean)){
         const g=k=>{const m=b.match(new RegExp(k+"\\s*:\\s*(.+)","i"));return m?m[1].trim():"";};
         const cm=b.match(CODE); if(!cm) continue;
-        add(g("Nombre"),g("C[eé]dula").replace(/\D/g,""),cm[1],g("Compromiso"));
+        add(g("Nombre"),g("C[eé]dula").replace(/\D/g,""),cm[1],g("Compromiso"),g("Autoriza tratamiento de datos"));
       }
     } else {
       for(const line of raw.split(/\r?\n/)){
@@ -1062,6 +1112,8 @@ function verifier(){
     document.getElementById("out").innerHTML=`
       <div class="stats"><span>${rows.length} registros leídos</span><span>${valid.length} válidos</span><span>${uniq.length} conductores</span><span>${aprob.length} aprobados</span></div>
       <div class="tablewrap"><table><thead><tr><th>Nombre</th><th>Cédula</th><th>Cliente</th><th>Sede</th><th>Puntaje</th><th>Estado</th><th>Intento</th><th>Fecha</th><th>Hora</th><th>Código</th><th>Validez</th><th>Certificado</th></tr></thead><tbody>${trs}</tbody></table></div>
+      <button class="btn" id="sv">Guardar los registros válidos en mi base</button>
+      <p class="small" id="svMsg"></p>
       <button class="btn ghost" id="cp">Copiar tabla para Excel</button>
       <textarea id="tsv" class="hidden" readonly>${esc(tsv.join("\n"))}</textarea>
       <p class="small" style="margin-top:10px">Si el mensaje no trae el nombre (por ejemplo, una fila de Forms sin nombre), el certificado sale como “Colaborador Vigía”. “No válido” significa que el código fue cambiado a mano, que no corresponde a la cédula del mensaje o que está incompleto. Los códigos repetidos se cuentan una sola vez.</p>`;
@@ -1079,6 +1131,15 @@ function verifier(){
         m.querySelector("button").onclick=()=>m.remove(); document.body.appendChild(m);
       }
     });
+    document.getElementById("sv").onclick=async()=>{
+      const bt=document.getElementById("sv"), msg=document.getElementById("svMsg");
+      const db=await getDb(); if(!db){ msg.textContent="No se pudo abrir tu base. Abre esta vista con tu cuenta de Claude."; return; }
+      const ok=rows.filter(x=>x.r&&x.r.valid); if(!ok.length){ msg.textContent="No hay registros válidos para guardar."; return; }
+      bt.disabled=true; bt.textContent="Guardando…"; let n=0, fail=0;
+      for(const x of ok){ try{ await db.collection("registros").doc(codeKey(x.code)).set(toRecord(x)); n++; }catch(e){ fail++; } }
+      bt.disabled=false; bt.textContent="Guardar los registros válidos en mi base";
+      msg.textContent=`${n} registro(s) guardado(s) en tu base${fail?`; ${fail} no se pudieron guardar`:""}. Si un código ya estaba, se actualizó.`;
+    };
     document.getElementById("cp").onclick=async()=>{
       const t=document.getElementById("tsv"); let done=false;
       try{ await navigator.clipboard.writeText(t.value); done=true; }catch(e){}
